@@ -1,0 +1,20 @@
+diff --git a/include/registry.go b/include/registry.go
+index 9bb9220..79a2c9a 100644
+--- a/include/registry.go
++++ b/include/registry.go
+@@ -23,6 +23,7 @@ import (
+ 	"github.com/sagernet/sing-box/protocol/block"
+ 	"github.com/sagernet/sing-box/protocol/bridge"
+ 	"github.com/sagernet/sing-box/protocol/direct"
++	"github.com/sagernet/sing-box/protocol/ebpfcgroup"
+ 	"github.com/sagernet/sing-box/protocol/group"
+ 	"github.com/sagernet/sing-box/protocol/http"
+ 	"github.com/sagernet/sing-box/protocol/mixed"
+@@ -55,6 +56,7 @@ func InboundRegistry() *inbound.Registry {
+ 	tun.RegisterInbound(registry)
+ 	redirect.RegisterRedirect(registry)
+ 	redirect.RegisterTProxy(registry)
++	ebpfcgroup.RegisterInbound(registry)
+ 	direct.RegisterInbound(registry)
+ 
+ 	socks.RegisterInbound(registry)
