@@ -1,0 +1,80 @@
+name: Build sing-box android-arm64 + ebpf-cgroup (v1.14.3)
+
+# Kit ebpf-cgroup untuk sing-box: inbound eBPF cgroup untuk trafik TCP
+# HP sendiri, format sama seperti kit ebpf-cgroup untuk mihomo.
+# Versi sing-box DIKUNCI di v1.14.3 (source repo ini = snapshot v1.14.3).
+#
+# Cara pakai:
+# 1. Buat repo dari source sing-box v1.14.3 (fork SagerNet/sing-box lalu
+#    checkout tag v1.14.3, atau upload snapshot v1.14.3), taruh SEMUA isi
+#    kit singbox-ebpf-cgroup-kit/ di root repo (file .yml ini ikut ke
+#    .github/workflows/), commit & push.
+# 2. Actions -> workflow ini -> Run workflow.
+# 3. Download binary dari Artifacts.
+#
+# Alur: apply kit -> go get cilium/ebpf -> compile BPF (clang)
+#       -> make build VERSION=1.14.3 (CGO + NDK, seperti build CHIZI).
+
+on:
+  workflow_dispatch:
+
+env:
+  BASE_TAGS: with_quic,with_dhcp,with_utls,with_clash_api,with_wireguard
+
+jobs:
+  build:
+    name: Build android-arm64
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r29
+
+      - name: Install clang (untuk compile BPF)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang
+
+      - name: Pasang ebpf-cgroup (inbound cgroup utk trafik HP)
+        run: |
+          chmod +x apply-ebpf-cgroup.sh
+          ./apply-ebpf-cgroup.sh
+
+      - name: Tambah dependensi loader eBPF
+        run: |
+          go get github.com/cilium/ebpf@v0.16.0
+          go mod tidy
+
+      - name: Compile BPF C -> bytecode
+        run: |
+          clang -O2 -target bpf -c protocol/ebpfcgroup/ebpf/redirect.c \
+            -o protocol/ebpfcgroup/ebpf/redirect.bpf.o
+          ls -la protocol/ebpfcgroup/ebpf/
+
+      - name: Build android-arm64
+        env:
+          CGO_ENABLED: "1"
+          GOOS: android
+          GOARCH: arm64
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          CC: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang
+        run: |
+          export TAGS="$BASE_TAGS"
+          make build VERSION=1.14.3
+          ls -la sing-box
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: sing-box-android-arm64-ebpfcgroup-1.14.3
+          path: sing-box
