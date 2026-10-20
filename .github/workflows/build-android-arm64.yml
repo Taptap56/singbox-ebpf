@@ -45,6 +45,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: sing-box/go.mod
+          cache: false
 
       - name: Setup Android NDK
         id: setup-ndk
@@ -74,7 +75,7 @@ jobs:
             -o protocol/ebpfcgroup/ebpf/redirect.bpf.o
           ls -la protocol/ebpfcgroup/ebpf/
 
-      - name: Build android-arm64
+      - name: Build android-arm64 (versi besar, tanpa strip)
         working-directory: sing-box
         env:
           CGO_ENABLED: "1"
@@ -84,7 +85,11 @@ jobs:
           CC: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang
         run: |
           export TAGS="$BASE_TAGS"
-          make build VERSION=1.14.3
+          # PARAMS ditimpa tanpa "-s -w": binary TIDAK di-strip (±61MB,
+          # tabel simbol & info debug ikut — fungsi identik dengan versi
+          # strip ±40MB). Hapus override PARAMS ini untuk kembali ke
+          # build strip bawaan Makefile.
+          make build VERSION=1.14.3 PARAMS="-v -trimpath -ldflags \"-X 'github.com/sagernet/sing-box/constant.Version=1.14.3' -X runtime.godebugDefault=multipathtcp=0,tlssha1=1 -checklinkname=0 -buildid=\""
           ls -la sing-box
 
       - name: Upload binary
