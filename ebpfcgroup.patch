@@ -1,5 +1,315 @@
+diff --git a/box.go b/box.go
+index ba5eff3..78b2d33 100644
+--- a/box.go
++++ b/box.go
+@@ -229,6 +229,9 @@ func New(options Options) (*Box, error) {
+ 	if err != nil {
+ 		return nil, E.Cause(err, "initialize network manager")
+ 	}
++	if err = dialer.PrepareEBPFSelfBypass(networkManager, options.Inbounds); err != nil {
++		return nil, E.Cause(err, "prepare eBPF self-bypass")
++	}
+ 	service.MustRegister[adapter.NetworkManager](ctx, networkManager)
+ 	// Must register after ConnectionManager: the Apple HTTP engine's proxy bridge reads it from the context when Manager.Start resolves the default client.
+ 	httpClientManager := httpclient.NewManager(ctx, logFactory.NewLogger("httpclient"), options.HTTPClients, routeOptions.DefaultHTTPClient)
+diff --git a/common/dialer/default.go b/common/dialer/default.go
+index f202283..8be57b6 100644
+--- a/common/dialer/default.go
++++ b/common/dialer/default.go
+@@ -138,6 +138,7 @@ func NewDefault(ctx context.Context, options option.DialerOptions) (*DefaultDial
+ 		markFunc := networkManager.AutoRedirectOutputMarkFunc()
+ 		dialer.Control = control.Append(dialer.Control, markFunc)
+ 		listener.Control = control.Append(listener.Control, markFunc)
++		dialer.Control, listener.Control = appendEBPFSelfBypass(networkManager, dialer.Control, listener.Control)
+ 	}
+ 	if options.ReuseAddr {
+ 		listener.Control = control.Append(listener.Control, control.ReuseAddr())
+@@ -432,6 +433,7 @@ func (d *DefaultDialer) trackConn(ctx context.Context, destination M.Socksaddr,
+ 		}
+ 		conn = &udpConn{Conn: conn, rawConn: rawConn}
+ 	}
++	conn = bindEBPFSelfBypassConnLifecycle(d.networkManager, conn)
+ 	if d.connectionManager != nil {
+ 		conn = d.connectionManager.TrackConn(conn)
+ 	}
+@@ -462,6 +464,7 @@ func (d *DefaultDialer) trackPacketConn(ctx context.Context, destination M.Socks
+ 	if err != nil {
+ 		return conn, err
+ 	}
++	conn = bindEBPFSelfBypassPacketConnLifecycle(d.networkManager, conn)
+ 	if d.connectionManager != nil {
+ 		conn = d.connectionManager.TrackPacketConn(conn)
+ 	}
+diff --git a/common/dialer/tfo.go b/common/dialer/tfo.go
+index fec2aaf..cee2a10 100644
+--- a/common/dialer/tfo.go
++++ b/common/dialer/tfo.go
+@@ -18,17 +18,29 @@ import (
+ )
+ 
+ type slowOpenConn struct {
+-	dialer      *tfo.Dialer
+-	ctx         context.Context
+-	cancel      context.CancelFunc
+-	network     string
+-	destination M.Socksaddr
+-	conn        atomic.Pointer[net.TCPConn]
+-	create      chan struct{}
+-	done        chan struct{}
+-	access      sync.Mutex
+-	closeOnce   sync.Once
+-	err         error
++	dialer       *tfo.Dialer
++	ctx          context.Context
++	cancel       context.CancelFunc
++	network      string
++	destination  M.Socksaddr
++	conn         atomic.Pointer[net.TCPConn]
++	create       chan struct{}
++	done         chan struct{}
++	access       sync.Mutex
++	closeOnce    sync.Once
++	closeHandler atomic.Value // func(*net.TCPConn)
++	err          error
++}
++
++func (c *slowOpenConn) setCloseHandler(handler func(*net.TCPConn)) {
++	c.closeHandler.Store(handler)
++}
++
++func (c *slowOpenConn) closeTCP(conn *net.TCPConn) {
++	if handler, loaded := c.closeHandler.Load().(func(*net.TCPConn)); loaded {
++		handler(conn)
++	}
++	_ = conn.Close()
+ }
+ 
+ func DialSlowContext(dialer *tfo.Dialer, ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
+@@ -91,7 +103,7 @@ func (c *slowOpenConn) Write(b []byte) (n int, err error) {
+ 	} else {
+ 		select {
+ 		case <-c.done:
+-			conn.Close()
++			c.closeTCP(conn.(*net.TCPConn))
+ 			err = os.ErrClosed
+ 			c.err = err
+ 		default:
+@@ -109,7 +121,7 @@ func (c *slowOpenConn) Close() error {
+ 		c.cancel()
+ 		conn := c.conn.Load()
+ 		if conn != nil {
+-			conn.Close()
++			c.closeTCP(conn)
+ 		}
+ 	})
+ 	return nil
+diff --git a/common/listener/listener.go b/common/listener/listener.go
+index 2cbbbab..dc21cba 100644
+--- a/common/listener/listener.go
++++ b/common/listener/listener.go
+@@ -12,6 +12,7 @@ import (
+ 	"github.com/sagernet/sing-box/common/settings"
+ 	"github.com/sagernet/sing-box/option"
+ 	"github.com/sagernet/sing/common"
++	"github.com/sagernet/sing/common/control"
+ 	E "github.com/sagernet/sing/common/exceptions"
+ 	"github.com/sagernet/sing/common/logger"
+ 	M "github.com/sagernet/sing/common/metadata"
+@@ -31,9 +32,11 @@ type Listener struct {
+ 	oobPacketHandler         adapter.OOBPacketHandler
+ 	threadUnsafePacketWriter bool
+ 	disablePacketOutput      bool
++	disableLog               bool
+ 	setSystemProxy           bool
+ 	systemProxySOCKS         bool
+ 	tproxy                   bool
++	socketControl            control.Func
+ 
+ 	tcpListener          net.Listener
+ 	systemProxy          settings.SystemProxy
+@@ -54,9 +57,11 @@ type Options struct {
+ 	OOBPacketHandler         adapter.OOBPacketHandler
+ 	ThreadUnsafePacketWriter bool
+ 	DisablePacketOutput      bool
++	DisableLog               bool
+ 	SetSystemProxy           bool
+ 	SystemProxySOCKS         bool
+ 	TProxy                   bool
++	SocketControl            control.Func
+ }
+ 
+ func New(
+@@ -72,9 +77,11 @@ func New(
+ 		oobPacketHandler:         options.OOBPacketHandler,
+ 		threadUnsafePacketWriter: options.ThreadUnsafePacketWriter,
+ 		disablePacketOutput:      options.DisablePacketOutput,
++		disableLog:               options.DisableLog,
+ 		setSystemProxy:           options.SetSystemProxy,
+ 		systemProxySOCKS:         options.SystemProxySOCKS,
+ 		tproxy:                   options.TProxy,
++		socketControl:            options.SocketControl,
+ 	}
+ }
+ 
+diff --git a/common/listener/listener_tcp.go b/common/listener/listener_tcp.go
+index 50643ea..20ddfc8 100644
+--- a/common/listener/listener_tcp.go
++++ b/common/listener/listener_tcp.go
+@@ -28,6 +28,7 @@ func (l *Listener) ListenTCP() (net.Listener, error) {
+ 	var err error
+ 	bindAddr := M.SocksaddrFrom(l.listenOptions.Listen.Build(netip.AddrFrom4([4]byte{127, 0, 0, 1})), l.listenOptions.ListenPort)
+ 	var listenConfig net.ListenConfig
++	listenConfig.Control = control.Append(listenConfig.Control, l.socketControl)
+ 	if l.listenOptions.BindInterface != "" {
+ 		listenConfig.Control = control.Append(listenConfig.Control, control.BindToInterface(service.FromContext[adapter.NetworkManager](l.ctx).InterfaceFinder(), l.listenOptions.BindInterface, -1))
+ 	}
+@@ -77,7 +78,9 @@ func (l *Listener) ListenTCP() (net.Listener, error) {
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	l.logger.Info("tcp server started at ", tcpListener.Addr())
++	if !l.disableLog {
++		l.logger.Info("tcp server started at ", tcpListener.Addr())
++	}
+ 	l.tcpListener = tcpListener
+ 	return tcpListener, err
+ }
+@@ -115,7 +118,9 @@ func (l *Listener) loopTCPIn() {
+ 		metadata.Source = M.SocksaddrFromNet(conn.RemoteAddr()).Unwrap()
+ 		metadata.OriginDestination = M.SocksaddrFromNet(conn.LocalAddr()).Unwrap()
+ 		ctx := log.ContextWithNewID(l.ctx)
+-		l.logger.InfoContext(ctx, "inbound connection from ", metadata.Source)
++		if !l.disableLog {
++			l.logger.InfoContext(ctx, "inbound connection from ", metadata.Source)
++		}
+ 		go l.connHandler.NewConnection(ctx, conn, metadata, nil)
+ 	}
+ }
+diff --git a/common/listener/listener_udp.go b/common/listener/listener_udp.go
+index 697ef34..da89d99 100644
+--- a/common/listener/listener_udp.go
++++ b/common/listener/listener_udp.go
+@@ -10,6 +10,7 @@ import (
+ 
+ 	"github.com/sagernet/sing-box/adapter"
+ 	"github.com/sagernet/sing-box/common/redir"
++	"github.com/sagernet/sing-box/common/udpio"
+ 	"github.com/sagernet/sing/common/buf"
+ 	sBufio "github.com/sagernet/sing/common/bufio"
+ 	"github.com/sagernet/sing/common/control"
+@@ -21,12 +22,17 @@ import (
+ 
+ const udpOutputBatchSize = 128
+ 
++type oobPacketBatchHandler interface {
++	NewOOBPacketBatch(buffers []*buf.Buffer, oobs [][]byte, sources []M.Socksaddr)
++}
++
+ func (l *Listener) ListenUDP() (net.PacketConn, error) {
+ 	return l.ListenUDPWithConfig(net.ListenConfig{})
+ }
+ 
+ func (l *Listener) ListenUDPWithConfig(listenConfig net.ListenConfig) (net.PacketConn, error) {
+ 	bindAddr := M.SocksaddrFrom(l.listenOptions.Listen.Build(netip.AddrFrom4([4]byte{127, 0, 0, 1})), l.listenOptions.ListenPort)
++	listenConfig.Control = control.Append(listenConfig.Control, l.socketControl)
+ 	if l.listenOptions.BindInterface != "" {
+ 		listenConfig.Control = control.Append(listenConfig.Control, control.BindToInterface(service.FromContext[adapter.NetworkManager](l.ctx).InterfaceFinder(), l.listenOptions.BindInterface, -1))
+ 	}
+@@ -62,7 +68,9 @@ func (l *Listener) ListenUDPWithConfig(listenConfig net.ListenConfig) (net.Packe
+ 	}
+ 	l.udpConn = udpConn.(*net.UDPConn)
+ 	l.udpAddr = bindAddr
+-	l.logger.Info("udp server started at ", udpConn.LocalAddr())
++	if !l.disableLog {
++		l.logger.Info("udp server started at ", udpConn.LocalAddr())
++	}
+ 	return udpConn, err
+ }
+ 
+@@ -83,6 +91,7 @@ func (l *Listener) DialContext(dialer net.Dialer, ctx context.Context, network s
+ 
+ func (l *Listener) ListenPacket(listenConfig net.ListenConfig, ctx context.Context, network string, address string) (net.PacketConn, error) {
+ 	return ListenNetworkNamespace[net.PacketConn](l.ctx, l.listenOptions.NetNs, func() (net.PacketConn, error) {
++		listenConfig.Control = control.Append(listenConfig.Control, control.UDPSocketBuffer(UDPSocketBufferSize()))
+ 		if l.listenOptions.BindInterface != "" {
+ 			listenConfig.Control = control.Append(listenConfig.Control, control.BindToInterface(service.FromContext[adapter.NetworkManager](l.ctx).InterfaceFinder(), l.listenOptions.BindInterface, -1))
+ 		}
+@@ -106,7 +115,15 @@ func (l *Listener) PacketWriter() N.PacketWriter {
+ 
+ func (l *Listener) loopUDPIn() {
+ 	defer close(l.packetOutboundClosed)
+-	if l.oobPacketHandler == nil {
++	if l.oobPacketHandler != nil {
++		if batchHandler, isBatchHandler := l.oobPacketHandler.(oobPacketBatchHandler); isBatchHandler {
++			if readWaiter, created := udpio.NewOOBPacketBatchReadWaiter(l.udpConn, 1024); created {
++				readWaiter.InitializeReadWaiter(N.ReadWaitOptions{BatchSize: sBufio.DefaultPacketReadBatchSize})
++				l.loopUDPInOOBBatch(batchHandler, readWaiter)
++				return
++			}
++		}
++	} else {
+ 		if batchHandler, isBatchHandler := l.packetHandler.(adapter.PacketBatchHandler); isBatchHandler {
+ 			packetConn := sBufio.NewPacketConn(l.udpConn)
+ 			if readWaiter, created := sBufio.CreatePacketBatchReadWaiter(packetConn); created {
+@@ -170,6 +187,22 @@ func (l *Listener) loopUDPIn() {
+ 	}
+ }
+ 
++func (l *Listener) loopUDPInOOBBatch(handler oobPacketBatchHandler, reader udpio.OOBPacketBatchReadWaiter) {
++	for {
++		buffers, oobs, sources, err := reader.WaitReadOOBPackets()
++		if err != nil {
++			buf.ReleaseMulti(buffers)
++			if l.shutdown.Load() && E.IsClosed(err) {
++				return
++			}
++			l.udpConn.Close()
++			l.logger.Error("UDP listener closed: ", err)
++			return
++		}
++		handler.NewOOBPacketBatch(buffers, oobs, sources)
++	}
++}
++
+ func (l *Listener) loopUDPInBatch(handler adapter.PacketBatchHandler, readWaiter N.PacketBatchReadWaiter) {
+ 	readWaitOptions := N.ReadWaitOptions{
+ 		BatchSize: sBufio.DefaultPacketReadBatchSize,
+diff --git a/constant/network.go b/constant/network.go
+index 88a1dd8..7eeda1c 100644
+--- a/constant/network.go
++++ b/constant/network.go
+@@ -5,6 +5,8 @@ import (
+ 	F "github.com/sagernet/sing/common/format"
+ )
+ 
++const UDPSocketBufferSize = 8 << 20
++
+ type InterfaceType uint8
+ 
+ const (
+diff --git a/constant/proxy.go b/constant/proxy.go
+index d42e5d9..9217b83 100644
+--- a/constant/proxy.go
++++ b/constant/proxy.go
+@@ -2,6 +2,7 @@ package constant
+ 
+ const (
+ 	TypeTun                = "tun"
++	TypeEBPF               = "ebpf"
+ 	TypeRedirect           = "redirect"
+ 	TypeTProxy             = "tproxy"
+ 	TypeDirect             = "direct"
+@@ -54,6 +55,8 @@ func ProxyDisplayName(proxyType string) string {
+ 	switch proxyType {
+ 	case TypeTun:
+ 		return "TUN"
++	case TypeEBPF:
++		return "eBPF"
+ 	case TypeRedirect:
+ 		return "Redirect"
+ 	case TypeTProxy:
 diff --git a/include/registry.go b/include/registry.go
-index 9bb9220..79a2c9a 100644
+index 9bb9220..c4c0ac5 100644
 --- a/include/registry.go
 +++ b/include/registry.go
 @@ -23,6 +23,7 @@ import (
@@ -10,11 +320,24 @@ index 9bb9220..79a2c9a 100644
  	"github.com/sagernet/sing-box/protocol/group"
  	"github.com/sagernet/sing-box/protocol/http"
  	"github.com/sagernet/sing-box/protocol/mixed"
-@@ -55,6 +56,7 @@ func InboundRegistry() *inbound.Registry {
+@@ -55,6 +56,8 @@ func InboundRegistry() *inbound.Registry {
  	tun.RegisterInbound(registry)
  	redirect.RegisterRedirect(registry)
  	redirect.RegisterTProxy(registry)
 +	ebpfcgroup.RegisterInbound(registry)
++	registerEBPFInbound(registry)
  	direct.RegisterInbound(registry)
  
  	socks.RegisterInbound(registry)
+diff --git a/route/network.go b/route/network.go
+index 53a1be8..351d3e8 100644
+--- a/route/network.go
++++ b/route/network.go
+@@ -42,6 +42,7 @@ type NetworkManager struct {
+ 	autoDetectInterface     bool
+ 	defaultOptions          adapter.NetworkOptions
+ 	autoRedirectOutputMark  uint32
++	ebpfSelfBypass          ebpfSelfBypassState
+ 	networkMonitor          tun.NetworkUpdateMonitor
+ 	interfaceMonitor        tun.DefaultInterfaceMonitor
+ 	packageManager          tun.PackageManager
