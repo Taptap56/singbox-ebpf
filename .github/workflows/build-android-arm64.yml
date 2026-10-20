@@ -1,40 +1,50 @@
 name: Build sing-box android-arm64 + ebpf-cgroup (v1.14.3)
 
-# Kit ebpf-cgroup untuk sing-box: inbound eBPF cgroup untuk trafik TCP
-# HP sendiri, format sama seperti kit ebpf-cgroup untuk mihomo.
-# Versi sing-box DIKUNCI di v1.14.3 (source repo ini = snapshot v1.14.3).
+# Kit eBPF untuk sing-box: inbound "ebpf-cgroup" (TCP lokal) + inbound
+# "ebpf" PENUH ala fork CHIZI-0618 (local TCP+UDP + shared hotspot),
+# hasil porting ke basis resmi. Versi sing-box DIKUNCI di v1.14.3.
+#
+# Repo ini isinya HANYA kit (new-files/, ebpfcgroup.patch,
+# apply-ebpf-cgroup.sh, workflow ini). Source sing-box v1.14.3 diambil
+# otomatis dari SagerNet/sing-box oleh workflow (checkout ref v1.14.3
+# ke folder sing-box/), kit dipasang ke sana, lalu dibuild.
 #
 # Cara pakai:
-# 1. Buat repo dari source sing-box v1.14.3 (fork SagerNet/sing-box lalu
-#    checkout tag v1.14.3, atau upload snapshot v1.14.3), taruh SEMUA isi
-#    kit singbox-ebpf-cgroup-kit/ di root repo (file .yml ini ikut ke
-#    .github/workflows/), commit & push.
+# 1. Taruh SEMUA isi kit singbox-ebpf-cgroup-kit/ di root repo
+#    (file .yml ini ke .github/workflows/), commit & push.
 # 2. Actions -> workflow ini -> Run workflow.
 # 3. Download binary dari Artifacts.
 #
-# Alur: apply kit -> go get cilium/ebpf -> compile BPF (clang)
+# Alur: checkout kit -> checkout sing-box v1.14.3 -> pasang kit
+#       -> go get cilium/ebpf -> compile BPF (clang)
 #       -> make build VERSION=1.14.3 (CGO + NDK, seperti build CHIZI).
 
 on:
   workflow_dispatch:
 
 env:
-  BASE_TAGS: with_quic,with_dhcp,with_utls,with_clash_api,with_wireguard
+  BASE_TAGS: with_quic,with_dhcp,with_utls,with_clash_api,with_wireguard,with_ebpf
 
 jobs:
   build:
     name: Build android-arm64
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout repo
+      - name: Checkout kit (repo ini)
+        uses: actions/checkout@v4
+
+      - name: Checkout sing-box v1.14.3 (dikunci)
         uses: actions/checkout@v4
         with:
+          repository: SagerNet/sing-box
+          ref: v1.14.3
+          path: sing-box
           fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: sing-box/go.mod
 
       - name: Setup Android NDK
         id: setup-ndk
@@ -45,23 +55,27 @@ jobs:
       - name: Install clang (untuk compile BPF)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq clang
 
-      - name: Pasang ebpf-cgroup (inbound cgroup utk trafik HP)
+      - name: Pasang kit ke source sing-box
         run: |
+          cp -r new-files sing-box/
+          cp ebpfcgroup.patch apply-ebpf-cgroup.sh sing-box/
+          cd sing-box
           chmod +x apply-ebpf-cgroup.sh
           ./apply-ebpf-cgroup.sh
 
-      - name: Tambah dependensi loader eBPF
-        run: |
-          go get github.com/cilium/ebpf@v0.16.0
-          go mod tidy
+      - name: Tambah library eBPF (sing-ebpf punya CHIZI + cilium/ebpf)
+        working-directory: sing-box
+        run: go get github.com/CHIZI-0618/sing-ebpf@v0.1.0-alpha.13
 
       - name: Compile BPF C -> bytecode
+        working-directory: sing-box
         run: |
           clang -O2 -target bpf -c protocol/ebpfcgroup/ebpf/redirect.c \
             -o protocol/ebpfcgroup/ebpf/redirect.bpf.o
           ls -la protocol/ebpfcgroup/ebpf/
 
       - name: Build android-arm64
+        working-directory: sing-box
         env:
           CGO_ENABLED: "1"
           GOOS: android
@@ -77,4 +91,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sing-box-android-arm64-ebpfcgroup-1.14.3
-          path: sing-box
+          path: sing-box/sing-box
