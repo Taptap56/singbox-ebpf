@@ -1,12 +1,12 @@
 # singbox-ebpf-cgroup-kit
 
-Kit eBPF untuk **sing-box resmi v1.14.3** (versi dikunci, **tanpa fork** —
-repo ini isinya kit saja, workflow mengambil source resminya sendiri).
+Kit eBPF untuk **sing-box resmi** (versi dipilih saat Run workflow,
+**tanpa fork** — repo ini isinya kit saja, workflow mengambil source
+resminya sendiri).
 Isinya DUA inbound eBPF:
 
 1. **`"ebpf"` — jalur eBPF PENUH ala fork CHIZI-0618** (hasil porting
-   `CHIZI-0618/sing-box` + library `CHIZI-0618/sing-ebpf` ke basis resmi
-   v1.14.3): trafik **lokal TCP+UDP** lewat cgroup, **klien hotspot**
+   `CHIZI-0618/sing-box` + library `CHIZI-0618/sing-ebpf` ke basis resmi): trafik **lokal TCP+UDP** lewat cgroup, **klien hotspot**
    lewat TC di interface AP, DNS hijack, bypass alamat privat, filter
    UID/paket Android, FakeIP ICMP reply. Skema config **persis** config
    fork CHIZI (`local:`/`shared:`) — config yang jalan di binary CHIZI
@@ -86,21 +86,32 @@ Inbound `"ebpf-cgroup"` (TCP lokal saja) tetap tersedia:
 ## Build via GitHub Actions (disarankan)
 
 Repo-nya cukup berisi **kit ini saja** (seperti repo
-`fauermeuar/singbox-1.14.3`) — source sing-box v1.14.3 diambil otomatis
-oleh workflow dari `SagerNet/sing-box`:
+`fauermeuar/singbox-1.14.3`) — source sing-box versi pilihan diambil
+otomatis oleh workflow dari `SagerNet/sing-box`:
 
 1. Taruh **semua isi folder kit ini** di root repo (termasuk
    `.github/workflows/build-android-arm64.yml`), commit & push.
-2. Tab **Actions** → *Build sing-box android-arm64 + ebpf-cgroup
-   (v1.14.3)* → **Run workflow**.
-3. Ambil binary `sing-box` dari **Artifacts**
-   (`sing-box-android-arm64-ebpfcgroup-1.14.3`).
+2. Tab **Actions** → *Build sing-box android-arm64 + ebpf-cgroup* →
+   **Run workflow** → pilih `latest` (deteksi rilis stabil terbaru
+   **saat workflow jalan**, seperti TaptapApp yang cek GitHub tiap
+   dibuka) atau pilih versi dari daftar 20 stabil terbaru, atau isi
+   versi kustom (mis. `1.15.0-alpha.13`) → **Run workflow**.
+   Versi kustom menang bila diisi; versi yang dipilih divalidasi
+   tag-nya di awal (gagal cepat bila tag tidak ada).
 
-Workflow menjalankan: checkout source resmi tag `v1.14.3` → apply kit →
+   Catatan: dropdown GitHub Actions tidak bisa dinamis — daftar 20 itu
+   snapshot saat kit dibuat. Yang selalu segar adalah `latest`; daftar
+   lama tetap bisa dipilih selama tag-nya ada.
+3. Ambil binary `sing-box` dari **Artifacts**
+   (`sing-box-android-arm64-ebpfcgroup-<versi>`).
+
+Workflow menjalankan: tentukan versi (termasuk deteksi `latest`) +
+validasi tag → checkout source resmi tag `v<versi>` → apply kit →
 `go get github.com/CHIZI-0618/sing-ebpf@v0.1.0-alpha.13` → compile BPF
-ebpf-cgroup dengan clang → `make build VERSION=1.14.3` dengan
+ebpf-cgroup dengan clang → `make build VERSION=<versi>` dengan
 `TAGS=with_quic,with_dhcp,with_utls,with_clash_api,with_wireguard,with_ebpf`
-(CGO + NDK r29 — hasilnya `sing-box version 1.14.3`).
+(CGO + NDK r29 — hasilnya `sing-box version <versi>`). Go yang dipakai
+mengikuti `go.mod` versi yang dipilih (otomatis, tanpa setting manual).
 
 Tanpa tag `with_ebpf`, inbound `"ebpf"` tetap terdaftar tapi menolak
 jalan dengan pesan `eBPF inbound is not included in this build`
@@ -109,7 +120,7 @@ jalan dengan pesan `eBPF inbound is not included in this build`
 ## Build manual
 
 ```sh
-# di root source sing-box v1.14.3, isi kit sudah dicopy ke sana juga
+# di root source sing-box (versi pilihanmu), isi kit sudah dicopy ke sana juga
 ./apply-ebpf-cgroup.sh
 go get github.com/CHIZI-0618/sing-ebpf@v0.1.0-alpha.13
 clang -O2 -target bpf -c protocol/ebpfcgroup/ebpf/redirect.c \
@@ -117,7 +128,7 @@ clang -O2 -target bpf -c protocol/ebpfcgroup/ebpf/redirect.c \
 export TAGS=with_quic,with_dhcp,with_utls,with_clash_api,with_wireguard,with_ebpf
 CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
   CC=<NDK>/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang \
-  make build VERSION=1.14.3
+  make build VERSION=<versi pilihan>
 ```
 
 ## Status & batasan
@@ -129,9 +140,13 @@ CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
   BPF sungguhan) belum dilakukan untuk build kit ini — kode
   datapath-nya identik dengan build CHIZI yang sudah terbukti jalan
   di HP yang sama.
+- **Pilih versi:** patch dibuat terhadap v1.14.3 — versi jauh lebih baru
+  bisa gagal `git apply` bila file yang dipatch berubah di upstream;
+  itu sinyal patch perlu di-rebase, bukan bug workflow. Versi yang
+  dipilih divalidasi tag-nya di awal (gagal cepat bila tag tidak ada).
 - **Wajib root** (attach eBPF) dan kernel `CONFIG_CGROUP_BPF=y`.
 - Yang **tidak** ikut di-porting dari fork CHIZI: API/diagnostik eBPF
   untuk daemon & perintah CLI tambahan (tidak ngaruh ke datapath).
 - **Kredit & lisensi:** inbound `"ebpf"` + library sing-ebpf karya
   **CHIZI-0618** (GPLv3, sama seperti sing-box). Kit ini cuma
-  memindahkannya ke basis resmi v1.14.3.
+  memindahkannya ke basis resmi.
