@@ -41,38 +41,36 @@ index f202283..8be57b6 100644
  		conn = d.connectionManager.TrackPacketConn(conn)
  	}
 diff --git a/common/dialer/tfo.go b/common/dialer/tfo.go
-index fec2aaf..cee2a10 100644
 --- a/common/dialer/tfo.go
 +++ b/common/dialer/tfo.go
-@@ -18,17 +18,29 @@ import (
- )
- 
- type slowOpenConn struct {
--	dialer      *tfo.Dialer
--	ctx         context.Context
--	cancel      context.CancelFunc
--	network     string
--	destination M.Socksaddr
--	conn        atomic.Pointer[net.TCPConn]
--	create      chan struct{}
--	done        chan struct{}
--	access      sync.Mutex
--	closeOnce   sync.Once
--	err         error
-+	dialer       *tfo.Dialer
-+	ctx          context.Context
-+	cancel       context.CancelFunc
-+	network      string
-+	destination  M.Socksaddr
-+	conn         atomic.Pointer[net.TCPConn]
-+	create       chan struct{}
-+	done         chan struct{}
-+	access       sync.Mutex
-+	closeOnce    sync.Once
+@@ -30,6 +30,7 @@ type slowOpenConn struct {
+ 	done        chan struct{}
+ 	access      sync.Mutex
+ 	closeOnce   sync.Once
 +	closeHandler atomic.Value // func(*net.TCPConn)
-+	err          error
-+}
-+
+ 	err         error
+ }
+ 
+@@ -96,7 +97,7 @@ func (c *slowOpenConn) Write(b []byte) (n int, err error) {
+ 	} else {
+ 		select {
+ 		case <-c.done:
+-			conn.Close()
++			c.closeTCP(conn.(*net.TCPConn))
+ 			err = os.ErrClosed
+ 			c.err = err
+ 		default:
+@@ -114,12 +115,23 @@ func (c *slowOpenConn) Close() error {
+ 		c.cancel()
+ 		conn := c.conn.Load()
+ 		if conn != nil {
+-			conn.Close()
++			c.closeTCP(conn)
+ 		}
+ 	})
+ 	return nil
+ }
+ 
 +func (c *slowOpenConn) setCloseHandler(handler func(*net.TCPConn)) {
 +	c.closeHandler.Store(handler)
 +}
@@ -82,27 +80,11 @@ index fec2aaf..cee2a10 100644
 +		handler(conn)
 +	}
 +	_ = conn.Close()
- }
- 
- func DialSlowContext(dialer *tfo.Dialer, ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
-@@ -91,7 +103,7 @@ func (c *slowOpenConn) Write(b []byte) (n int, err error) {
- 	} else {
- 		select {
- 		case <-c.done:
--			conn.Close()
-+			c.closeTCP(conn.(*net.TCPConn))
- 			err = os.ErrClosed
- 			c.err = err
- 		default:
-@@ -109,7 +121,7 @@ func (c *slowOpenConn) Close() error {
- 		c.cancel()
- 		conn := c.conn.Load()
- 		if conn != nil {
--			conn.Close()
-+			c.closeTCP(conn)
- 		}
- 	})
- 	return nil
++}
++
+ func (c *slowOpenConn) LocalAddr() net.Addr {
+ 	conn := c.conn.Load()
+ 	if conn == nil {
 diff --git a/common/listener/listener.go b/common/listener/listener.go
 index 2cbbbab..dc21cba 100644
 --- a/common/listener/listener.go
@@ -230,7 +212,7 @@ index 697ef34..da89d99 100644
  
  func (l *Listener) ListenPacket(listenConfig net.ListenConfig, ctx context.Context, network string, address string) (net.PacketConn, error) {
  	return ListenNetworkNamespace[net.PacketConn](l.ctx, l.listenOptions.NetNs, func() (net.PacketConn, error) {
-+		listenConfig.Control = control.Append(listenConfig.Control, control.UDPSocketBuffer(UDPSocketBufferSize()))
++		listenConfig.Control = control.Append(listenConfig.Control, UDPSocketBuffer(UDPSocketBufferSize()))
  		if l.listenOptions.BindInterface != "" {
  			listenConfig.Control = control.Append(listenConfig.Control, control.BindToInterface(service.FromContext[adapter.NetworkManager](l.ctx).InterfaceFinder(), l.listenOptions.BindInterface, -1))
  		}
@@ -341,3 +323,5 @@ index 53a1be8..351d3e8 100644
  	networkMonitor          tun.NetworkUpdateMonitor
  	interfaceMonitor        tun.DefaultInterfaceMonitor
  	packageManager          tun.PackageManager
+
+
