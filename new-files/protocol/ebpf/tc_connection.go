@@ -328,7 +328,7 @@ func (i *Inbound) newTCUDPReplySocket(source netip.AddrPort) (*net.UDPConn, func
 		fragmentControl = control.EnableUDPFragment()
 	}
 	listenConfig := net.ListenConfig{Control: control.Append(
-		control.UDPSocketBuffer(listener.UDPSocketBufferSize()),
+		listener.UDPSocketBuffer(listener.UDPSocketBufferSize()),
 		// This socket is created outside common/listener.Listener, so it
 		// must mirror ebpf.udp_fragment explicitly.
 		fragmentControl,
