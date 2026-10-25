@@ -140,10 +140,17 @@ CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
   BPF sungguhan) belum dilakukan untuk build kit ini — kode
   datapath-nya identik dengan build CHIZI yang sudah terbukti jalan
   di HP yang sama.
-- **Pilih versi:** patch dibuat terhadap v1.14.3 — versi jauh lebih baru
-  bisa gagal `git apply` bila file yang dipatch berubah di upstream;
-  itu sinyal patch perlu di-rebase, bukan bug workflow. Versi yang
-  dipilih divalidasi tag-nya di awal (gagal cepat bila tag tidak ada).
+- **Pilih versi:** patch awalnya dibuat terhadap v1.14.3, lalu di-rebase
+  (2026-10-25) agar jalan di 1.14.3 **dan** 1.14.4: hunk `tfo.go` ditulis
+  ulang minimal (tanpa realignment struct, supaya cocok di kedua versi)
+  dan `control.UDPSocketBuffer` yang dihapus library sing baru diganti
+  implementasi lokal di kit (`common/listener/socket_buffer_func*.go`,
+  perilaku persis aslinya). Versi yang jauh lebih baru tetap bisa gagal
+  `git apply` bila file yang dipatch berubah di upstream — itu sinyal
+  patch perlu di-rebase, bukan bug workflow; sejak perbaikan ini,
+  gagal patch langsung menghentikan run di langkah "Pasang kit"
+  (dulu lolos sampai build dan gagal di sana). Versi yang dipilih
+  divalidasi tag-nya di awal (gagal cepat bila tag tidak ada).
 - **Wajib root** (attach eBPF) dan kernel `CONFIG_CGROUP_BPF=y`.
 - Yang **tidak** ikut di-porting dari fork CHIZI: API/diagnostik eBPF
   untuk daemon & perintah CLI tambahan (tidak ngaruh ke datapath).
