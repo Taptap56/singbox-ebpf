@@ -26,13 +26,17 @@ cp new-files/include/ebpf.go new-files/include/ebpf_stub.go include/
 cp new-files/route/network_ebpf.go new-files/route/network_ebpf_stub.go route/
 cp new-files/common/dialer/ebpf_self_bypass_linux.go new-files/common/dialer/ebpf_self_bypass_stub.go common/dialer/
 cp new-files/common/udpio/*.go common/udpio/
-cp new-files/common/listener/socket_buffer_bsd.go new-files/common/listener/socket_buffer_other.go common/listener/
+cp new-files/common/listener/socket_buffer_*.go common/listener/
 cp new-files/common/process/searcher_ebpf_linux.go common/process/
 cp new-files/dns/transport/fakeip/store_ebpf.go dns/transport/fakeip/
 echo "   option/adapter/include/route/dialer/udpio/listener/process/fakeip OK"
 
 echo "== apply patch (registrasi + glue) =="
-git apply --check ebpfcgroup.patch && git apply ebpfcgroup.patch
+if ! git apply --check ebpfcgroup.patch; then
+  echo "ERROR: patch tidak cocok dengan source ini (versi sing-box berubah? patch perlu di-rebase) — hentikan di sini, jangan lanjut build." >&2
+  exit 1
+fi
+git apply ebpfcgroup.patch
 echo "   registry, constant, box, route, dialer, listener OK"
 
 echo ""
