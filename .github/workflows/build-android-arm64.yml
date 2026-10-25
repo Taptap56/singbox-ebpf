@@ -1,26 +1,79 @@
-name: Build sing-box android-arm64 + ebpf-cgroup (v1.14.3)
+name: Build sing-box android-arm64 + ebpf-cgroup
 
 # Kit eBPF untuk sing-box: inbound "ebpf-cgroup" (TCP lokal) + inbound
 # "ebpf" PENUH ala fork CHIZI-0618 (local TCP+UDP + shared hotspot),
-# hasil porting ke basis resmi. Versi sing-box DIKUNCI di v1.14.3.
+# hasil porting ke basis resmi.
+#
+# Versi sing-box TIDAK LAGI DIKUNCI: saat Run workflow, pilih dari daftar
+# 20 versi stabil terbaru (input singbox_version) atau isi versi kustom
+# (input custom_version, mis. 1.15.0-alpha.13) — kustom menang bila diisi.
+# Versi yang dipilih divalidasi di awal: tag v<VERSI> harus ada di
+# SagerNet/sing-box, bila tidak ada workflow gagal dengan pesan jelas.
+#
+# Opsi "latest" di daftar = deteksi rilis stabil terbaru SAAT WORKFLOW
+# JALAN (mirip TaptapApp yang cek GitHub tiap dibuka): workflow mencari
+# tag stabil tertinggi lewat git ls-remote, lalu build itu. Catatan:
+# dropdown GitHub Actions tidak bisa dinamis — daftar 20 itu snapshot
+# saat kit dibuat; "latest" yang selalu segar.
 #
 # Repo ini isinya HANYA kit (new-files/, ebpfcgroup.patch,
-# apply-ebpf-cgroup.sh, workflow ini). Source sing-box v1.14.3 diambil
-# otomatis dari SagerNet/sing-box oleh workflow (checkout ref v1.14.3
-# ke folder sing-box/), kit dipasang ke sana, lalu dibuild.
+# apply-ebpf-cgroup.sh, workflow ini). Source sing-box versi pilihan
+# diambil otomatis dari SagerNet/sing-box oleh workflow (checkout ref
+# v<VERSI> ke folder sing-box/), kit dipasang ke sana, lalu dibuild.
 #
 # Cara pakai:
 # 1. Taruh SEMUA isi kit singbox-ebpf-cgroup-kit/ di root repo
 #    (file .yml ini ke .github/workflows/), commit & push.
-# 2. Actions -> workflow ini -> Run workflow.
+# 2. Actions -> workflow ini -> Run workflow -> pilih versi (atau isi
+#    versi kustom) -> Run workflow.
 # 3. Download binary dari Artifacts.
 #
-# Alur: checkout kit -> checkout sing-box v1.14.3 -> pasang kit
-#       -> go get cilium/ebpf -> compile BPF (clang)
-#       -> make build VERSION=1.14.3 (CGO + NDK, seperti build CHIZI).
+# Alur: checkout kit -> tentukan + validasi versi -> checkout sing-box
+#       versi pilihan -> pasang kit -> go get cilium/ebpf -> compile BPF
+#       (clang) -> make build VERSION=<pilihan> (CGO + NDK, seperti
+#       build CHIZI).
+#
+# CATATAN patch: ebpfcgroup.patch dibuat terhadap v1.14.3. Versi yang
+# jauh lebih baru bisa GAGAL di langkah "Pasang kit" bila file yang
+# dipatch berubah di upstream — itu sinyal patch perlu di-rebase,
+# bukan bug workflow (git apply --check gagal dengan keras, tidak
+# diam-diam dilewati).
 
 on:
   workflow_dispatch:
+    inputs:
+      singbox_version:
+        description: 'Versi core sing-box (latest = deteksi rilis stabil terbaru saat run)'
+        required: true
+        type: choice
+        default: '1.14.4'
+        options:
+          - 'latest'
+          - '1.14.4'
+          - '1.14.3'
+          - '1.14.2'
+          - '1.14.1'
+          - '1.14.0'
+          - '1.13.21'
+          - '1.13.20'
+          - '1.13.19'
+          - '1.13.18'
+          - '1.13.16'
+          - '1.13.15'
+          - '1.13.3'
+          - '1.13.2'
+          - '1.13.1'
+          - '1.13.0'
+          - '1.12.25'
+          - '1.12.24'
+          - '1.12.23'
+          - '1.12.22'
+          - '1.12.21'
+      custom_version:
+        description: 'Versi kustom (kosongkan bila pakai daftar; boleh alpha/beta/rc, tanpa awalan v)'
+        required: false
+        type: string
+        default: ''
 
 env:
   BASE_TAGS: with_quic,with_dhcp,with_utls,with_clash_api,with_wireguard,with_ebpf
@@ -33,11 +86,39 @@ jobs:
       - name: Checkout kit (repo ini)
         uses: actions/checkout@v4
 
-      - name: Checkout sing-box v1.14.3 (dikunci)
+      - name: Tentukan + validasi versi sing-box
+        id: ver
+        run: |
+          VER="${{ inputs.custom_version }}"
+          [ -z "$VER" ] && VER="${{ inputs.singbox_version }}"
+          if [ "$VER" = "latest" ]; then
+            # Deteksi rilis stabil terbaru SAAT RUN: semua tag vX.Y.Z
+            # (tanpa sufiks alpha/beta/rc, tanpa baris peeled ^{}) lalu
+            # ambil yang tertinggi menurut sort versi. Tanpa API/token.
+            VER="$(git ls-remote --tags https://github.com/SagerNet/sing-box.git 'v*' | awk '{print $2}' | sed 's|refs/tags/||' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
+            if [ -z "$VER" ]; then
+              echo "::error::Gagal mendeteksi rilis stabil terbaru dari SagerNet/sing-box"
+              exit 1
+            fi
+            echo "Terdeteksi rilis stabil terbaru: $VER"
+          fi
+          VER="${VER#v}"  # terima dengan/tanpa awalan v
+          if ! printf '%s' "$VER" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$'; then
+            echo "::error::Format versi tidak valid: '$VER' (contoh: 1.14.4 atau 1.15.0-alpha.13)"
+            exit 1
+          fi
+          if ! git ls-remote --tags --exit-code https://github.com/SagerNet/sing-box.git "v$VER" >/dev/null 2>&1; then
+            echo "::error::Tag v$VER tidak ditemukan di SagerNet/sing-box — cek lagi versinya"
+            exit 1
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "Versi sing-box: $VER (tag v$VER)"
+
+      - name: Checkout sing-box v${{ steps.ver.outputs.version }}
         uses: actions/checkout@v4
         with:
           repository: SagerNet/sing-box
-          ref: v1.14.3
+          ref: v${{ steps.ver.outputs.version }}
           path: sing-box
           fetch-depth: 0
 
@@ -83,17 +164,18 @@ jobs:
           GOARCH: arm64
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           CC: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang
+          SB_VERSION: ${{ steps.ver.outputs.version }}
         run: |
           export TAGS="$BASE_TAGS"
           # PARAMS ditimpa tanpa "-s -w": binary TIDAK di-strip (±61MB,
           # tabel simbol & info debug ikut — fungsi identik dengan versi
           # strip ±40MB). Hapus override PARAMS ini untuk kembali ke
           # build strip bawaan Makefile.
-          make build VERSION=1.14.3 PARAMS="-v -trimpath -ldflags \"-X 'github.com/sagernet/sing-box/constant.Version=1.14.3' -X runtime.godebugDefault=multipathtcp=0,tlssha1=1 -checklinkname=0 -buildid=\""
+          make build VERSION="$SB_VERSION" PARAMS="-v -trimpath -ldflags \"-X 'github.com/sagernet/sing-box/constant.Version=$SB_VERSION' -X runtime.godebugDefault=multipathtcp=0,tlssha1=1 -checklinkname=0 -buildid=\""
           ls -la sing-box
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: sing-box-android-arm64-ebpfcgroup-1.14.3
+          name: sing-box-android-arm64-ebpfcgroup-${{ steps.ver.outputs.version }}
           path: sing-box/sing-box
