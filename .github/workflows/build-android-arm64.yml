@@ -33,11 +33,12 @@ name: Build sing-box android-arm64 + ebpf-cgroup
 #       (clang) -> make build VERSION=<pilihan> (CGO + NDK, seperti
 #       build CHIZI).
 #
-# CATATAN patch: ebpfcgroup.patch dibuat terhadap v1.14.3. Versi yang
-# jauh lebih baru bisa GAGAL di langkah "Pasang kit" bila file yang
-# dipatch berubah di upstream — itu sinyal patch perlu di-rebase,
-# bukan bug workflow (git apply --check gagal dengan keras, tidak
-# diam-diam dilewati).
+# CATATAN patch: ebpfcgroup.patch awalnya dibuat terhadap v1.14.3, sudah
+# di-rebase (2026-10-25) agar jalan di 1.14.3 dan 1.14.4. Versi yang jauh
+# lebih baru bisa GAGAL di langkah "Pasang kit" bila file yang dipatch
+# berubah di upstream — itu sinyal patch perlu di-rebase, bukan bug
+# workflow (sejak perbaikan ini, gagal patch langsung menghentikan run
+# di langkah itu, tidak lolos sampai build).
 
 on:
   workflow_dispatch:
