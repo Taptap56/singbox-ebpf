@@ -1,9 +1,9 @@
 #!/bin/sh
-# apply-ebpf-cgroup.sh — pasang kit eBPF ke source sing-box v1.14.3:
+# apply-ebpf-cgroup.sh — pasang kit eBPF ke source sing-box (versi pilihan workflow):
 #   - inbound "ebpf-cgroup" (buatan kit ini, TCP lokal saja)
 #   - inbound "ebpf" PENUH ala fork CHIZI-0618 (local TCP+UDP + shared
-#     hotspot, DNS hijack) — hasil porting ke basis resmi v1.14.3
-# Jalankan dari ROOT source sing-box v1.14.3, dengan seluruh isi kit juga
+#     hotspot, DNS hijack) — hasil porting ke basis resmi
+# Jalankan dari ROOT source sing-box (versi apa pun yang dipilih), dengan seluruh isi kit juga
 # di sana (workflow mencopy script ini + patch + new-files/ ke root source).
 set -e
 cd "$(dirname "$0")"
@@ -40,5 +40,5 @@ echo "SELESAI. Langkah lanjut:"
 echo "  1. Tambah library eBPF CHIZI: go get github.com/CHIZI-0618/sing-ebpf@v0.1.0-alpha.13"
 echo "  2. Compile BPF ebpf-cgroup: clang -O2 -target bpf -c protocol/ebpfcgroup/ebpf/redirect.c -o protocol/ebpfcgroup/ebpf/redirect.bpf.o"
 echo "     (Objek BPF inbound ebpf penuh sudah termasuk di dalam modul sing-ebpf.)"
-echo "  3. Build: make build VERSION=1.14.3 dengan TAGS menyertakan with_ebpf (lihat README)"
+echo "  3. Build: make build VERSION=<versi pilihan> dengan TAGS menyertakan with_ebpf (lihat README)"
 echo "  (Atau pakai workflow GitHub Actions di kit ini — otomatis.)"
